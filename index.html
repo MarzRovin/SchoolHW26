@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>1x1x1 NBT Schematic Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1e1e24;
+    color: #e8e8ec;
+    max-width: 640px;
+    margin: 40px auto;
+    padding: 0 20px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.4rem; }
+  .card {
+    background: #26262f;
+    border: 1px solid #35353f;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin-top: 20px;
+  }
+  label { display: block; margin-top: 12px; font-size: 0.85rem; color: #b9b9c4; }
+  input, select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    margin-top: 4px;
+    border-radius: 6px;
+    border: 1px solid #3d3d48;
+    background: #1a1a20;
+    color: #e8e8ec;
+    font-size: 0.9rem;
+  }
+  button {
+    margin-top: 22px;
+    width: 100%;
+    padding: 12px;
+    background: #d97757;
+    color: #1e1e24;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  button:hover { background: #e08a6d; }
+  .note { font-size: 0.8rem; color: #8a8a96; margin-top: 14px; }
+  code { background: #1a1a20; padding: 1px 5px; border-radius: 4px; }
+  #status { margin-top: 12px; font-size: 0.85rem; min-height: 1.2em; }
+  .combo { position: relative; }
+  .combo-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: #1a1a20;
+    border: 1px solid #3d3d48;
+    border-radius: 6px;
+    z-index: 10;
+    display: none;
+  }
+  .combo-list.open { display: block; }
+  .combo-item { padding: 8px 10px; cursor: pointer; font-size: 0.88rem; }
+  .combo-item:hover, .combo-item.active { background: #33333d; }
+  .combo-item .eid { color: #8a8a96; font-size: 0.75rem; margin-left: 6px; }
+  .combo-item.empty { color: #8a8a96; cursor: default; }
+  .combo-item.empty:hover { background: none; }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .toggle-row span { font-size: 0.85rem; color: #b9b9c4; }
+  .switch { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: #3d3d48; border-radius: 24px; transition: 0.15s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; bottom: 3px; background: #e8e8ec; border-radius: 50%;
+    transition: 0.15s;
+  }
+  .switch input:checked + .slider { background: #d97757; }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  .enchant-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin-top: 8px;
+  }
+  .enchant-row .combo { flex: 1 1 auto; }
+  .enchant-row .level-input { width: 76px; flex: 0 0 auto; }
+  .row-remove {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    margin-top: 4px;
+    padding: 0;
+    background: #35353f;
+    color: #e08a8a;
+    border-radius: 6px;
+    font-size: 1.1rem;
+    line-height: 1;
+  }
+  .row-remove:hover { background: #3d2b2b; }
+  .secondary-btn {
+    margin-top: 10px;
+    background: #33333d;
+    color: #e8e8ec;
+    padding: 9px;
+    font-size: 0.85rem;
+  }
+  .secondary-btn:hover { background: #3d3d48; }
+</style>
+</head>
+<body>
+
+<h1>1×1×1 Classic Blaze Enchanter Schematic</h1>
+<p class="note">Generates a gzip-compressed, big-endian <code>.nbt</code> structure file matching the tree you provided.</p>
+
+<div class="card">
+  <label>Enchantments</label>
+  <div id="enchantRows"></div>
+  <button type="button" id="addRowBtn" class="secondary-btn">+ Add enchantment</button>
+
+  <label>Block ID / mod version
+    <div class="toggle-row">
+      <span>Standalone addon</span>
+      <label class="switch">
+        <input type="checkbox" id="variantToggle">
+        <span class="slider"></span>
+      </label>
+      <span>Merged into CEI</span>
+    </div>
+  </label>
+
+  <button onclick="generate()">Download .nbt</button>
+  <div id="status"></div>
+</div>
+
+<p class="note">
+  The filter can hold multiple enchantments at once — add as many rows as you need. An empty list would just mean no enchantment gets applied.
+  The toggle only switches the block ID between the deprecated standalone <code>create_classic_blaze_enchanter</code> addon and the version now built into <code>create_enchantment_industry</code> (CEI).
+</p>
+
+<script>
+// ---- Vanilla enchantment reference list (id -> display name) ----
+const ENCHANTMENTS = [
+  { id:'minecraft:aqua_affinity', name:'Aqua Affinity' },
+  { id:'minecraft:bane_of_arthropods', name:'Bane of Arthropods' },
+  { id:'minecraft:binding_curse', name:'Curse of Binding' },
+  { id:'minecraft:blast_protection', name:'Blast Protection' },
+  { id:'minecraft:breach', name:'Breach' },
+  { id:'minecraft:channeling', name:'Channeling' },
+  { id:'minecraft:density', name:'Density' },
+  { id:'minecraft:depth_strider', name:'Depth Strider' },
+  { id:'minecraft:efficiency', name:'Efficiency' },
+  { id:'minecraft:feather_falling', name:'Feather Falling' },
+  { id:'minecraft:fire_aspect', name:'Fire Aspect' },
+  { id:'minecraft:fire_protection', name:'Fire Protection' },
+  { id:'minecraft:flame', name:'Flame' },
+  { id:'minecraft:fortune', name:'Fortune' },
+  { id:'minecraft:frost_walker', name:'Frost Walker' },
+  { id:'minecraft:impaling', name:'Impaling' },
+  { id:'minecraft:infinity', name:'Infinity' },
+  { id:'minecraft:knockback', name:'Knockback' },
+  { id:'minecraft:looting', name:'Looting' },
+  { id:'minecraft:loyalty', name:'Loyalty' },
+  { id:'minecraft:luck_of_the_sea', name:'Luck of the Sea' },
+  { id:'minecraft:lure', name:'Lure' },
+  { id:'minecraft:mending', name:'Mending' },
+  { id:'minecraft:multishot', name:'Multishot' },
+  { id:'minecraft:piercing', name:'Piercing' },
+  { id:'minecraft:power', name:'Power' },
+  { id:'minecraft:projectile_protection', name:'Projectile Protection' },
+  { id:'minecraft:protection', name:'Protection' },
+  { id:'minecraft:punch', name:'Punch' },
+  { id:'minecraft:quick_charge', name:'Quick Charge' },
+  { id:'minecraft:respiration', name:'Respiration' },
+  { id:'minecraft:riptide', name:'Riptide' },
+  { id:'minecraft:sharpness', name:'Sharpness' },
+  { id:'minecraft:silk_touch', name:'Silk Touch' },
+  { id:'minecraft:smite', name:'Smite' },
+  { id:'minecraft:soul_speed', name:'Soul Speed' },
+  { id:'minecraft:sweeping_edge', name:'Sweeping Edge' },
+  { id:'minecraft:swift_sneak', name:'Swift Sneak' },
+  { id:'minecraft:thorns', name:'Thorns' },
+  { id:'minecraft:unbreaking', name:'Unbreaking' },
+  { id:'minecraft:vanishing_curse', name:'Curse of Vanishing' },
+  { id:'minecraft:wind_burst', name:'Wind Burst' },
+  { id:'create:capacity', name:'Capacity (Create)' },
+  { id:'create:potato_recovery', name:'Potato Recovery (Create)' },
+];
+
+// ---- Dynamic enchant rows (id + level per row, add/remove) ----
+const rowsContainer = document.getElementById('enchantRows');
+let rowSeq = 0;
+
+function addEnchantRow(id = 'minecraft:fortune', level = 255){
+  const rowId = 'row' + (rowSeq++);
+  const row = document.createElement('div');
+  row.className = 'enchant-row';
+  row.dataset.rowId = rowId;
+  row.innerHTML = `
+    <div class="combo">
+      <input type="text" class="enchant-id-input" value="${id}" autocomplete="off">
+      <div class="combo-list"></div>
+    </div>
+    <input type="number" class="level-input" value="${level}" min="1" max="255">
+    <button type="button" class="row-remove" title="Remove">×</button>
+  `;
+  rowsContainer.appendChild(row);
+
+  const input = row.querySelector('.enchant-id-input');
+  const list = row.querySelector('.combo-list');
+  const combo = row.querySelector('.combo');
+  const levelInput = row.querySelector('.level-input');
+  const removeBtn = row.querySelector('.row-remove');
+
+  function renderList(filter){
+    const f = filter.trim().toLowerCase();
+    const matches = ENCHANTMENTS.filter(e =>
+      e.id.toLowerCase().includes(f) || e.name.toLowerCase().includes(f)
+    );
+    list.innerHTML = matches.length === 0
+      ? `<div class="combo-item empty">No match — will use raw text as typed</div>`
+      : matches.map(e => `<div class="combo-item" data-id="${e.id}">${e.name}<span class="eid">${e.id}</span></div>`).join('');
+    list.classList.add('open');
+  }
+
+  input.addEventListener('input', () => renderList(input.value));
+  input.addEventListener('focus', () => renderList(input.value));
+  list.addEventListener('mousedown', (e) => {
+    const item = e.target.closest('.combo-item');
+    if(item && item.dataset.id){
+      input.value = item.dataset.id;
+      list.classList.remove('open');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if(!combo.contains(e.target)) list.classList.remove('open');
+  });
+
+  levelInput.addEventListener('change', () => {
+    let v = parseInt(levelInput.value, 10);
+    if(isNaN(v)) v = 1;
+    levelInput.value = Math.max(1, Math.min(255, v));
+  });
+
+  removeBtn.addEventListener('click', () => {
+    if(rowsContainer.children.length <= 1) return; // keep at least one row
+    row.remove();
+  });
+}
+
+document.getElementById('addRowBtn').addEventListener('click', () => addEnchantRow());
+addEnchantRow(); // seed with one row
+
+function getEnchantEntries(){
+  return Array.from(rowsContainer.querySelectorAll('.enchant-row')).map(row => {
+    const id = row.querySelector('.enchant-id-input').value.trim();
+    const rawLevel = parseInt(row.querySelector('.level-input').value, 10);
+    const level = Math.max(1, Math.min(255, isNaN(rawLevel) ? 1 : rawLevel));
+    return { id, level };
+  }).filter(e => e.id.length > 0);
+}
+
+// ---- Minimal big-endian NBT writer ----
+const TYPE = { end:0, byte:1, short:2, int:3, long:4, float:5, double:6,
+                byteArray:7, string:8, list:9, compound:10, intArray:11, longArray:12 };
+
+class Writer {
+  constructor(){ this.bytes = []; }
+  byte(v){ this.bytes.push(v & 0xFF); }
+  short(v){ this.bytes.push((v>>8)&0xFF, v&0xFF); }
+  int(v){ this.bytes.push((v>>24)&0xFF,(v>>16)&0xFF,(v>>8)&0xFF,v&0xFF); }
+  float(v){ const b=new ArrayBuffer(4); new DataView(b).setFloat32(0,v,false); this.bytes.push(...new Uint8Array(b)); }
+  str(s){ const u=new TextEncoder().encode(s); this.short(u.length); this.bytes.push(...u); }
+  header(type,name){ this.byte(TYPE[type]); this.str(name); }
+}
+
+function writeTag(w, type, value){
+  switch(type){
+    case 'byte': w.byte(value); break;
+    case 'int': w.int(value); break;
+    case 'float': w.float(value); break;
+    case 'string': w.str(value); break;
+    case 'compound': writeCompound(w, value); break;
+    case 'list': writeList(w, value); break;
+    case 'end': break;
+  }
+}
+function writeCompound(w, entries){
+  for(const e of entries){
+    w.header(e.type, e.name);
+    writeTag(w, e.type, e.value);
+  }
+  w.byte(0); // TAG_End
+}
+function writeList(w, {itemType, items}){
+  w.byte(TYPE[itemType || 'end']);
+  w.int(items.length);
+  for(const item of items) writeTag(w, itemType, item);
+}
+
+function buildTree(){
+  const entries = getEnchantEntries();
+  const isNative = document.getElementById('variantToggle').checked;
+
+  const blockId = isNative
+    ? 'create_enchantment_industry:classic_blaze_enchanter'
+    : 'create_classic_blaze_enchanter:classic_blaze_enchanter';
+
+  // The filter item is what actually carries the enchantment(s) + level(s).
+  // An empty levels list just means "no enchantment applied."
+  const filterTag = { name:'Filter', type:'compound', value:[
+    { name:'components', type:'compound', value:[
+      { name:'minecraft:stored_enchantments', type:'compound', value:[
+        { name:'levels', type:'compound', value:
+          entries.map(e => ({ name: e.id, type:'int', value: e.level }))
+        },
+      ]},
+    ]},
+    { name:'count', type:'int', value: 1 },
+    { name:'id', type:'string', value: 'create_enchantment_industry:super_enchanting_template' },
+  ]};
+
+  const tankEntry = () => ([
+    { name:'Level', type:'compound', value:[
+      { name:'Speed', type:'float', value: 0.25 },
+      { name:'Target', type:'int', value: 0 },
+      { name:'Force', type:'byte', value: 1 },
+      { name:'Value', type:'int', value: 0 },
+    ]},
+    { name:'TankContent', type:'compound', value:[] },
+  ]);
+
+  const root = [
+    { name:'size', type:'list', value:{ itemType:'int', items:[1,1,1] } },
+    { name:'entities', type:'list', value:{ itemType:'end', items:[] } },
+    { name:'blocks', type:'list', value:{ itemType:'compound', items:[
+      [
+        { name:'nbt', type:'compound', value:[
+          { name:'isCreative', type:'byte', value: 0 },
+          { name:'HeldItem', type:'compound', value:[] },
+          { name:'Tanks', type:'list', value:{ itemType:'compound', items:[ tankEntry(), tankEntry() ] } },
+          filterTag,
+          { name:'ProcessingTime', type:'int', value: -1 },
+          { name:'FilterAmount', type:'int', value: 64 },
+          { name:'id', type:'string', value: blockId },
+          { name:'UpTo', type:'int', value: 1 },
+        ]},
+        { name:'pos', type:'list', value:{ itemType:'int', items:[0,0,0] } },
+        { name:'state', type:'int', value: 0 },
+      ]
+    ]}},
+    { name:'palette', type:'list', value:{ itemType:'compound', items:[
+      [
+        { name:'Properties', type:'compound', value:[
+          { name:'blaze', type:'string', value: 'smouldering' },
+          { name:'facing', type:'string', value: 'south' },
+        ]},
+        { name:'Name', type:'string', value: blockId },
+      ]
+    ]}},
+    { name:'brewinandchewin:data_version', type:'int', value: 100 },
+    { name:'DataVersion', type:'int', value: 3955 },
+    { name:'Railways_DataVersion', type:'int', value: 2 },
+  ];
+  return root;
+}
+
+function buildFilename(entries){
+  if(entries.length === 0) return 'classic_blaze_enchanter.nbt';
+  const parts = entries.map(e => {
+    const shortName = e.id.includes(':') ? e.id.split(':')[1] : e.id;
+    const safe = shortName.replace(/[^a-zA-Z0-9]+/g, '_');
+    return `${safe}_${e.level}`;
+  });
+  return parts.join('_') + '.nbt';
+}
+
+function generate(){
+  try {
+    const status = document.getElementById('status');
+    const entries = getEnchantEntries();
+    const w = new Writer();
+    w.byte(TYPE.compound);
+    w.str(''); // unnamed root
+    writeCompound(w, buildTree());
+
+    const raw = new Uint8Array(w.bytes);
+    const gz = pako.gzip(raw);
+
+    const blob = new Blob([gz], { type: 'application/gzip' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = buildFilename(entries);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    status.textContent = `Done — ${raw.length} bytes raw, ${gz.length} bytes gzipped.`;
+    status.style.color = '#8fce7a';
+  } catch (err) {
+    document.getElementById('status').textContent = 'Error: ' + err.message;
+    document.getElementById('status').style.color = '#e08a8a';
+    console.error(err);
+  }
+}
+</script>
+</body>
+</html>
